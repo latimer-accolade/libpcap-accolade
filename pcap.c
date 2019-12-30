@@ -104,6 +104,10 @@
 #include "pcap-dbus.h"
 #endif
 
+#ifdef HAVE_ANIC_API
+#include "pcap-anic.h"
+#endif
+
 static int
 pcap_not_initialized(pcap_t *pcap)
 {
@@ -325,6 +329,9 @@ static struct capture_source_type {
 #endif
 #ifdef PCAP_SUPPORT_DBUS
 	{ dbus_findalldevs, dbus_create },
+#endif
+#ifdef HAVE_ANIC_API
+	{ anic_findalldevs, anic_create },
 #endif
 	{ NULL, NULL }
 };

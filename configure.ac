@@ -1067,6 +1067,119 @@ if test "$with_snf" != no; then
 	fi
 fi
 
+
+
+# Check for Accolade ANIC support.
+AC_ARG_WITH([anic], [  --with-anic[[=DIR]]        include Accolade ANIC support ("yes", "no" or DIR; default="yes" on Linux if present)],
+[
+	if test "$withval" = no
+	then
+		# User doesn't want ANIC support
+		want_anic=no
+	elif test "$withval" = yes
+	then
+		# User wants ANIC support, no directory specified
+		want_anic=yes
+	else
+		# User wants ANIC support with a directory specified
+		want_anic=yes
+		anic_root=$withval
+	fi
+],[
+	# Use ANIC API if present, otherwise don't
+	want_anic=ifpresent 
+])
+
+AC_ARG_WITH([anic-includes], [  --with-anic-includes=DIR   Accolade ANIC include directory],
+[
+	# User wants ANIC support and has specified a header directory, so use the provided value.
+	want_anic=yes
+	anic_include_dir=$withval
+],[])
+
+AC_ARG_WITH([anic-libraries], [  --with-anic-libraries=DIR Accolade ANIC library directory],
+[
+	# User wants ANIC support and has specified a library directory, so use the provided value.
+	want_anic=yes
+	anic_lib_dir=$withval
+],[])
+
+case "$V_PCAP" in
+linux)
+	#
+	# We support the ANIC API only on Linux at the moment
+	;;
+*)
+	#
+	# If the user explicitly requested ANIC support, tell them it's not supported.
+	# If they expressed no preference, don't include it.
+	#
+	if test $want_anic = yes; then
+		AC_MSG_ERROR([Accolade ANIC support is only available with the 'linux' packet capture type])
+	elif test $want_anic = yes; then
+		want_anic=no
+	fi
+	;;
+esac
+
+ac_cv_lbl_anic_api=no
+
+if test "$want_anic" != no; then
+
+	AC_MSG_CHECKING([whether we have Accolade ANIC API headers])
+
+	# If necessary, set default paths for Accolade ANIC API headers and
+	# libraries.
+	if test -z "$anic_root"; then
+		anic_root=/opt/accolade
+	fi
+
+	if test -z "$anic_include_dir"; then
+		anic_include_dir="$anic_root/include"
+	fi
+
+	if test -z "$anic_lib_dir"; then
+		anic_lib_dir="$anic_root/lib"
+	fi
+
+	if test -r $anic_include_dir/anic_api.h; then
+		ac_cv_lbl_anic_api=yes
+	fi
+	AC_MSG_RESULT([$ac_cv_lbl_anic_api ($anic_include_dir)])
+fi
+
+if test $ac_cv_lbl_anic_api = yes; then
+	AC_MSG_CHECKING([libanic.so])
+	anic_api_obj=no
+	if test -r $anic_lib_dir/libanic.so; then
+		anic_api_obj=$anic_lib_dir/libanic.so
+	fi
+	if test $anic_api_obj = no; then
+		AC_MSG_RESULT([no (checked $anic_lib_dir)])
+		ac_cv_lbl_anic_api=no
+	else
+		AC_MSG_RESULT([yes ($anic_api_obj)])
+	fi
+fi
+
+ANIC_LIBS=""
+if test $ac_cv_lbl_anic_api = yes; then
+	V_INCLS="$V_INCLS -I$anic_include_dir"
+	SSRC="$SSRC pcap-anic.c"
+	LDFLAGS="$LDFLAGS -L$anic_lib_dir"
+	LIBS="$LIBS -lanic"
+	AC_DEFINE(HAVE_ANIC_API, 1, [define to 1 if you have the ANIC API])
+fi
+
+if test $ac_cv_lbl_anic_api = no; then
+	if test "$want_anic" = yes; then
+		# User wanted Accolade ANIC support but we couldn't find it.
+		AC_MSG_ERROR([Accolade ANIC API requested, but not found at $anic_root: use --without-anic])
+	fi
+fi
+
+
+
 # Check for Riverbed TurboCap support.
 AC_ARG_WITH([turbocap],
 AC_HELP_STRING([--with-turbocap@<:@=DIR@:>@],[include Riverbed TurboCap support (located in directory DIR, if supplied).  @<:@default=yes, if present@:>@]),
@@ -1472,6 +1585,7 @@ AC_SUBST(SSRC)
 AC_SUBST(DYEXT)
 AC_SUBST(MAN_FILE_FORMATS)
 AC_SUBST(MAN_MISC_INFO)
+AC_SUBST(ANIC_LIBS)
 
 AC_ARG_ENABLE([usb],
 [AC_HELP_STRING([--enable-usb],[enable nusb support @<:@default=yes, if support available@:>@])],

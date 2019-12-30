@@ -41,7 +41,7 @@ struct ring_s {
   anic_handle_t anic_handle;
   uint32_t anic_id;
   uint32_t ring_id;
-  uint32_t activated;
+  uint32_t port_count;
   uint32_t blk_count;
   uint32_t nonblocking;
   uint8_t  *blk_buf[ANIC_BLOCK_MAX_BLOCKS];
@@ -123,6 +123,8 @@ static int anic_activate(pcap_t *p)
     anic_close(r_p->anic_handle);
     goto fail;
   }
+  tmp = anic_get_number_of_ports(r_p->anic_handle, &tmp);
+  r_p->port_count;
 
   // verify we're configured for MFL mode and ring is not already in use
   tmp = anic_block_check_mfl(r_p->anic_handle, r_p->ring_id);
@@ -356,8 +358,7 @@ static int anic_stats(pcap_t *p, struct pcap_stat *ps)
   uint32_t port;
 
   anic_port_get_counts_all(r_p->anic_handle, 1, &all);
-//for (port = 0; port < r_p->port_count; port++)
-  for (port = 0; port < 4; port++)   // TBD
+  for (port = 0; port < r_p->port_count; port++)
     total += all.counts[port].rsrcs;
   ps->ps_recv = r_p->packets;
   ps->ps_drop = anic_block_get_ring_dropcount(r_p->anic_handle, r_p->ring_id);

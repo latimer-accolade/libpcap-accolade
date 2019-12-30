@@ -1,3 +1,16 @@
+/*
+ * pcap-anic.c: Packet capture interface for Accolade ANIC card.
+ *
+ * The functionality of this code supports reception from ANIC rings
+ * in MFL block mode only. The ANIC card must be pre-configured separately
+ * using an appropriate management utility (e.g. anic_mfl_config) or application.
+ *
+ * Because the new anic API function anic_block_check_mfl() is used,
+ * the ANIC SDK_1_2_20191230 or later must be used.
+ *
+ * Author: Robert Latimer (latimer@accoladetechnology.com)
+ */
+
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
@@ -102,69 +115,77 @@ pcap_t *anic_create(const char *device, char *ebuf, int *is_ours)
 static int anic_activate(pcap_t *p)
 {
   struct ring_s *r_p = (struct ring_s *)p->priv;
-//struct card_s *c_p = (struct card_s *)&l_shp[r_p->anic_id];
   int tmp;
   char *s;
 
-  if (1) {
-    // in MFL mode, every ring stream uses a different ANIC handle
-    r_p->anic_handle = anic_open("/dev/anic", r_p->anic_id);
-    if (anic_error_code(r_p->anic_handle) != ANIC_ERR_NONE) {
-      anic_close(r_p->anic_handle);
+  r_p->anic_handle = anic_open("/dev/anic", r_p->anic_id);
+  if (anic_error_code(r_p->anic_handle) != ANIC_ERR_NONE) {
+    anic_close(r_p->anic_handle);
+    goto fail;
+  }
+
+  // verify we're configured for MFL mode and ring is not already in use
+  tmp = anic_block_check_mfl(r_p->anic_handle, r_p->ring_id);
+  if (tmp == 1) {
+    pcap_snprintf(p->errbuf, PCAP_ERRBUF_SIZE,
+      "anic_activate(anic:%u@%u): not configured for MFL mode",
+      r_p->anic_id, r_p->ring_id);
+    goto fail;
+  }
+  if (tmp == 2) {
+    pcap_snprintf(p->errbuf, PCAP_ERRBUF_SIZE,
+      "anic_activate(anic:%u@%u): ring already enabled",
+      r_p->anic_id, r_p->ring_id);
+    goto fail;
+  }
+
+  // set ring freelist tag association
+  anic_block_set_ring_nodetag(r_p->anic_handle, r_p->ring_id, r_p->ring_id);
+
+  // determine number of blocks to use for ring
+  r_p->blk_count = ANIC_RING_BLOCKS_DEFAULT;
+  if ((s = getenv("ANIC_RING_BLOCKS")) != NULL) {
+    tmp = atoi(s);
+    if (tmp < 2 || tmp > 2047) {
+      pcap_snprintf(p->errbuf, PCAP_ERRBUF_SIZE,
+        "anic_activate(anic:%u@%u): invalid ANIC_RING_BLOCKS value (%d) in environment",
+        r_p->anic_id, r_p->ring_id, tmp);
       goto fail;
     }
+  }
 
-    // set ring freelist tag association
-    anic_block_set_ring_nodetag(r_p->anic_handle, r_p->ring_id, r_p->ring_id);
-
-    // determine number of blocks to use for ring
-    r_p->blk_count = ANIC_RING_BLOCKS_DEFAULT;
-    if ((s = getenv("ANIC_RING_BLOCKS")) != NULL) {
-      tmp = atoi(s);
-      if (tmp < 2 || tmp > 2047) {
-        pcap_snprintf(p->errbuf, PCAP_ERRBUF_SIZE,
-          "anic_activate(anic:%u@%u): invalid ANIC_RING_BLOCKS value (%d) in environment",
-          r_p->anic_id, r_p->ring_id, tmp);
-        goto fail;
-      }
+  // load blocks to free list for ring
+  int blk;
+  int bufid;
+  void *v_p;
+  struct anic_dma_info dma_info;
+  int shmid;
+  for (bufid = 0; bufid < r_p->blk_count; bufid++) {
+    v_p = mmap(0, HUGEPAGE_SIZE, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE | MAP_HUGETLB, -1, 0);
+    if (v_p == MAP_FAILED) {
+      pcap_snprintf(p->errbuf, PCAP_ERRBUF_SIZE,
+        "anic_activate(anic:%u@%u): mmap() failure error %u %s",
+        r_p->anic_id, r_p->ring_id, errno, strerror(errno));
+      goto fail;
     }
-
-    // load blocks to free list for ring
-    int blk;
-    int bufid;
-    void *v_p;
-    struct anic_dma_info dma_info;
-    int shmid;
-    for (bufid = 0; bufid < r_p->blk_count; bufid++) {
-      v_p = mmap(0, HUGEPAGE_SIZE, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE | MAP_HUGETLB, -1, 0);
-      if (v_p == MAP_FAILED) {
-        pcap_snprintf(p->errbuf, PCAP_ERRBUF_SIZE,
-          "anic_activate(anic:%u@%u): mmap() failure error %u %s",
-          r_p->anic_id, r_p->ring_id, errno, strerror(errno));
-        goto fail;
-      }
-      dma_info.userVirtualAddress = v_p;
-      dma_info.length = HUGEPAGE_SIZE;
-      dma_info.pageShift = ANIC_2M_PAGE;
-      if (anic_map_dma(r_p->anic_handle, &dma_info)) {
-        pcap_snprintf(p->errbuf, PCAP_ERRBUF_SIZE,
-          "anic_activate(anic:%u@%u): anic_map_dma() failed",
-          r_p->anic_id, r_p->ring_id);
-        goto fail;
-      }
-      blk = anic_block_add(r_p->anic_handle, r_p->ring_id, 0, r_p->ring_id, dma_info.dmaPhysicalAddress);
-      if (blk < 0) {
-        pcap_snprintf(p->errbuf, PCAP_ERRBUF_SIZE,
-          "anic_activate(anic:%u@%u): anic_block_add(bufid:%u) failed",
-          r_p->anic_id, r_p->ring_id, bufid);
-        goto fail;
-      }
-      r_p->blk_buf[blk] = (uint8_t *)v_p;
-      r_p->blk_dma[blk] = dma_info.dmaPhysicalAddress;
+    dma_info.userVirtualAddress = v_p;
+    dma_info.length = HUGEPAGE_SIZE;
+    dma_info.pageShift = ANIC_2M_PAGE;
+    if (anic_map_dma(r_p->anic_handle, &dma_info)) {
+      pcap_snprintf(p->errbuf, PCAP_ERRBUF_SIZE,
+        "anic_activate(anic:%u@%u): anic_map_dma() failed",
+        r_p->anic_id, r_p->ring_id);
+      goto fail;
     }
-  } else {
-    // not supporting non-MFL for now
-    goto fail;
+    blk = anic_block_add(r_p->anic_handle, r_p->ring_id, 0, r_p->ring_id, dma_info.dmaPhysicalAddress);
+    if (blk < 0) {
+      pcap_snprintf(p->errbuf, PCAP_ERRBUF_SIZE,
+        "anic_activate(anic:%u@%u): anic_block_add(bufid:%u) failed",
+        r_p->anic_id, r_p->ring_id, bufid);
+      goto fail;
+    }
+    r_p->blk_buf[blk] = (uint8_t *)v_p;
+    r_p->blk_dma[blk] = dma_info.dmaPhysicalAddress;
   }
 
   // enable ring
@@ -336,7 +357,7 @@ static int anic_stats(pcap_t *p, struct pcap_stat *ps)
 
   anic_port_get_counts_all(r_p->anic_handle, 1, &all);
 //for (port = 0; port < r_p->port_count; port++)
-  for (port = 0; port < 2; port++)   // TBD
+  for (port = 0; port < 4; port++)   // TBD
     total += all.counts[port].rsrcs;
   ps->ps_recv = r_p->packets;
   ps->ps_drop = anic_block_get_ring_dropcount(r_p->anic_handle, r_p->ring_id);
@@ -350,7 +371,6 @@ static void anic_cleanup(pcap_t *p)
 {
   struct ring_s *r_p = (struct ring_s *)p->priv;
 
-  // TBD
   pcap_cleanup_live_common(p);
 }
 

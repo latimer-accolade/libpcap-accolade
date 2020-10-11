@@ -21,6 +21,7 @@
 #include <sys/mman.h>
 #include <sys/shm.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 #include "pcap-int.h"
 

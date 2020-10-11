@@ -43,8 +43,8 @@ struct ring_s {
   uint32_t ring_id;
   uint32_t port_count;
   uint32_t blk_count;
-  uint32_t nonblocking;
-  uint8_t  *blk_buf[ANIC_BLOCK_MAX_BLOCKS];
+  uint32_t timeout;
+  uint8_t *blk_buf[ANIC_BLOCK_MAX_BLOCKS];
   uint64_t blk_dma[ANIC_BLOCK_MAX_BLOCKS];
   uint32_t blk_valid;
   uint32_t blk_id;
@@ -156,6 +156,9 @@ static int anic_activate(pcap_t *p)
     }
   }
 
+  // set timeout (or non-blocking)
+  r_p->timeout = (p->opt.timeout <= 0) ? 0xffffffff : p->opt.timeout;
+
   // load blocks to free list for ring
   int blk;
   int bufid;
@@ -219,8 +222,10 @@ static int anic_read(pcap_t *p, int cnt, pcap_handler callback, u_char *user)
   struct ring_s *r_p = (struct ring_s *)p->priv;
   int n;
   uint32_t blkcnt;
+  uint32_t timeout;
 
   n = 0;
+  timeout = r_p->timeout * 10;
   while (n < cnt || PACKET_COUNT_IS_UNLIMITED(cnt)) {
     // has pcap_breakloop() been called?
     if (p->break_loop) {
@@ -254,9 +259,14 @@ static int anic_read(pcap_t *p, int cnt, pcap_handler callback, u_char *user)
       struct anic_blkstatus_s blkstatus;
       uint32_t cnt;
 
-      blkcnt = anic_block_get(r_p->anic_handle, r_p->ring_id, r_p->ring_id, &blkstatus);
-      if (blkcnt == 0)
-        return n;
+      while (1) {
+        blkcnt = anic_block_get(r_p->anic_handle, r_p->ring_id, r_p->ring_id, &blkstatus);
+        if (blkcnt > 0)
+          break;
+        if (timeout-- == 0)
+          return n;
+        usleep(100);
+      }
       r_p->blk_id = blkstatus.blkid;
       if (r_p->blk_buf[blkstatus.blkid] == NULL) {
         fprintf(stderr, "anic_block_get(ring:%u) returned invalid blkid:%u\n", r_p->ring_id, blkstatus.blkid);
@@ -287,6 +297,7 @@ static int anic_read(pcap_t *p, int cnt, pcap_handler callback, u_char *user)
       hdr.len = desc_p->origlength;
       callback(user, &hdr, pktaddr);
       n++;
+      timeout = 0;
     }
   }
 }
@@ -336,7 +347,7 @@ static int anic_set_datalink(pcap_t *p, int dlt)
 static int anic_getnonblock(pcap_t *p, char *errbuf)
 {
   struct ring_s *r_p = (struct ring_s *)p->priv;
-  return r_p->nonblocking;
+  return r_p->timeout == 0;
 }
 
 
@@ -344,7 +355,11 @@ static int anic_getnonblock(pcap_t *p, char *errbuf)
 static int anic_setnonblock(pcap_t *p, int nonblock, char *errbuf)
 {
   struct ring_s *r_p = (struct ring_s *)p->priv;
-  r_p->nonblocking = nonblock;
+
+  if (nonblock)
+    r_p->timeout = 0;
+  else 
+    r_p->timeout = (p->opt.timeout <= 0) ? 0xffffffff : p->opt.timeout;
   return 0;
 }
 
